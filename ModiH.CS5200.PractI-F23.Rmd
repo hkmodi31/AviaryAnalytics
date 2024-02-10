@@ -1,0 +1,475 @@
+---
+title: "Practicum I CS5200"
+author: "Modi, Harshkumar"
+date: "Fall 2023"
+output: 
+  pdf_document
+---
+
+
+```{r Importing required packages for data manipulation and connecting with database server, warning=FALSE}
+#install.packages("DBI")
+#install.packages("tidyverse")
+#install.packages("RMySQL")
+#install.packages("dplyr")
+library(tidyverse)
+library(RMySQL)
+library(DBI)
+library(dplyr)
+```
+
+## Connect to Database
+```{r - Creating a connection with the server on AWS}
+con <- dbConnect(RMySQL::MySQL(), 
+                 host = "myrds.ccgfbvk5hpfc.us-east-1.rds.amazonaws.com", 
+                 port = 3306,
+                 dbname = "birdStrikesDB",
+                 username = "admin", 
+                 password = "CS5200Fall23!")
+```
+
+
+
+## Creating database and tables
+```{sql Drops strikes table if exists,connection=con, eval=F}
+DROP TABLE IF EXISTS strikes;
+```
+
+```{sql Drops conditions table if exists, connection=con, eval=F}
+DROP TABLE IF EXISTS conditions;
+```
+
+```{sql Drops flights table if exists, connection=con, eval=F}
+DROP TABLE IF EXISTS flights ;
+```
+
+```{sql Drops airports table if exists, connection=con, eval=F}
+DROP TABLE IF EXISTS airports;
+```
+
+## Q4 (A) Creating flights table
+```{sql Create flights table if exists,connection=con}
+CREATE TABLE IF NOT EXISTS flights (
+  fid INTEGER NOT NULL AUTO_INCREMENT,
+  date DATE NOT NULL,
+  origin INTEGER NOT NULL,
+  airline TEXT NOT NULL,
+  aircraft TEXT NOT NULL,
+  altitude INTEGER CHECK (altitude>=0),
+  heavy INTEGER NOT NULL,
+  PRIMARY KEY (fid)) ;
+```
+
+## Q4 (B) Creating airports table
+```{sql Create table airports if exists, connection=con}
+CREATE TABLE IF NOT EXISTS airports (
+  aid INTEGER NOT NULL AUTO_INCREMENT,
+  airportName TEXT NOT NULL,
+  airportState TEXT NOT NULL,
+  airportCode TEXT,
+  PRIMARY KEY (aid));
+```
+
+## Q4 (C) Adding foreign key origin to reference airports table
+```{sql Adds foreign key origin to reference airports table, connection=con}
+ALTER TABLE flights ADD FOREIGN KEY (origin) REFERENCES airports(aid);
+```
+
+## Q4 (D) Creating table conditions
+```{sql Create table conditions if exists, connection=con}
+CREATE TABLE IF NOT EXISTS conditions (
+  cid INTEGER NOT NULL AUTO_INCREMENT,
+  sky_condition TEXT NOT NULL,
+  explanation TEXT,
+  PRIMARY KEY (cid));
+```
+
+## Q4 (E) Creating table strikes
+```{sql Create table strikes if exists, connection=con}
+CREATE TABLE IF NOT EXISTS strikes (
+  sid INTEGER NOT NULL AUTO_INCREMENT,
+  fid INTEGER NOT NULL,
+  numbirds INTEGER NOT NULL,
+  IMPACT TEXT NOT NULL,
+  damage INTEGER NOT NULL,
+  altitude INTEGER CHECK (altitude>=0),
+  conditions INTEGER NOT NULL,
+  PRIMARY KEY (sid));
+```
+
+## Q4 (F) Adding foreign key fid to reference flights table
+```{sql Adds foreign key fid to reference flights table, connection=con}
+ALTER TABLE strikes ADD FOREIGN KEY (fid) REFERENCES flights(fid);
+```
+## Q4 (F) Adding foreign key conditions to reference conditions table
+```{sql Adds foreign key conditions to reference conditions table, connection=con}
+ALTER TABLE strikes ADD FOREIGN KEY (conditions) REFERENCES conditions(cid);
+```
+
+## Q4 (G) Describing each table
+```{sql Taking a look at airports table, connection=con, eval=FALSE}
+DESCRIBE airports;
+```
+
+
+```{sql Describes the flights table, connection=con, eval=FALSE}
+DESCRIBE flights;
+```
+
+
+```{sql Describes the strikes table, connection=con, eval=FALSE}
+DESCRIBE strikes;
+```
+
+
+```{sql Describes the conditions lookup table, connection=con, eval=FALSE}
+DESCRIBE conditions;
+```
+
+## Q5 Importing csv data
+```{r Importing csv data}
+bds.raw <- read.csv("https://s3.us-east-2.amazonaws.com/artificium.us/datasets/BirdStrikesData-V2.csv", header = TRUE)
+#Checking all columns and it's datatype in the csv data
+str(bds.raw)
+```
+
+## Removing N/A and empty values
+```{r - Checking the airports table where origin column is N/A and "" values, eval = T, warning = F}
+print(sum(bds.raw$origin == "N/A"))
+print(sum(bds.raw$airport == ""))
+```
+
+## Filling N/A and empty values with "unknown" as per question
+```{r - Fill the airports table with airport "" and origin with N/A to unknown, eval = T, warning = F}
+## removing blank and NA values and replacing with "unknown"
+bds.raw$airport[bds.raw$airport == ""] <- "unknown"
+bds.raw$origin[bds.raw$origin == "N/A"] <- "unknown"
+```
+
+## Checking if N/A and empty values still persists
+```{r - Checking Origin column with unknown values, eval = T, warning = F}
+## checking again to see if blank values are removed
+print(sum(bds.raw$origin == "N/A"))
+print(sum(bds.raw$airport == ""))
+```
+
+
+## Creating ids for tables according to their schema
+```{r Creating ids for tables according to their schema}
+bds.raw <- bds.raw %>%
+  mutate(
+    aid = as.integer(factor(airport, levels = unique(airport))), #aid - creates a unique ID for airports 
+    cid = as.integer(factor(sky_conditions, levels = unique(sky_conditions))), #cid - creates a unique ID for conditions ("No Cloud", "Some Cloud", "Overcast")
+    fid = seq_along(rid) #fid - creates unique ID for each row
+  )
+head(bds.raw,5)
+```
+
+## Creating dataframe airports
+```{r Selecting required rows from the dataframe for the airports table and changes datatype according to our defined sql table, eval = T, warning = F}
+#Create the airports table and populate it with unique airport data from the incidents table
+airports <- unique(bds.raw[c("aid","airport", "origin")])
+# mapping the dataframe airports to the table airports in database
+colnames(airports) <- c("aid","airportName", "airportState")
+head(airports, 1)
+```
+
+## Creating dataframe flights
+```{r Selecting required rows from the dataframe for the flights table and changes datatype according to our defined sql table}
+flights <- bds.raw %>% select(fid, flight_date, origin = aid, airline, model, altitude_ft, heavy_flag)
+colnames(flights) <- c("fid","date", "origin", "airline", "aircraft", "altitude", "heavy")
+flights <- flights %>%
+  mutate(
+    date = as.Date(date, format = "%m/%d/%Y"),  
+    altitude = as.integer(gsub(",", "", altitude)),
+    heavy = ifelse(heavy == "Yes", 1, 0)         # Converting 'Yes' to 1 and 'No' to 0
+  )
+
+#Displays first row of selected rows of dataframe
+head(flights,1)
+```
+
+## Creating dataframe conditions
+```{r Selecting required rows from the dataframe for the conditions lookup table and making changes in datatype according to our defined sql table}
+conditions <- bds.raw[c("cid","sky_conditions")]
+colnames(conditions) <- c("cid","sky_condition")
+conditions <- unique(conditions)
+head(conditions,1)
+```
+
+## Creating dataframe strikes
+```{r Selecting required rows from the dataframe for the strikes table and making changes in datatype according to our defined sql table}
+strikes <- bds.raw[c("fid","wildlife_struck", "impact", "damage", "altitude_ft", "cid")]
+colnames(strikes) <- c("fid","numbirds", "IMPACT", "damage", "altitude", "conditions")
+strikes$damage <- recode(strikes$damage, 
+                            `Caused damage` = 1,
+                            `No damage` = 0)
+strikes <- strikes %>% mutate(
+  damage = as.integer(damage),
+  conditions = as.integer(conditions),
+  altitude = as.integer(gsub(",", "", altitude)))
+head(strikes, 1)
+```
+
+## Q6 Inserting data (from dataframes) into the sql tables
+```{r}
+dbWriteTable(con, name = "airports", value = airports, overwrite = FALSE, append = TRUE, row.names = FALSE)
+```
+
+```{r Inserting all the rows of the dataframe to the "flights" sql table}
+dbWriteTable(con, name = "flights", value = flights, overwrite = FALSE, append = TRUE, row.names = FALSE)
+```
+
+```{r Inserting all the rows of the dataframe to the "conditions" sql table}
+dbWriteTable(con, name = "conditions", value = conditions, overwrite = FALSE, append = TRUE, row.names = FALSE)
+```
+
+```{r Inserting all the rows of the dataframe to the "strikes" sql table}
+dbWriteTable(con, name = "strikes", value = strikes, overwrite = FALSE, append = TRUE, row.names = FALSE)
+```
+
+
+
+
+
+
+
+## Q7 Showing glimpses of data in each table
+```{sql Shows the first 10 rows of aiports table, connection=con}
+SELECT * from airports limit 10;
+```
+
+```{sql Displaying first 10 rows of the "flights" sql table, connection=con}
+SELECT * FROM flights LIMIT 10;
+```
+
+```{sql Displaying first 10 rows of the "conditions" sql table, connection=con, eval=FALSE}
+SELECT * FROM conditions LIMIT 10;
+```
+
+```{sql Displaying first 10 rows of the "strikes" sql table, connection=con, eval=FALSE}
+SELECT * FROM strikes LIMIT 10;
+```
+
+# Q8 Finding the top 10 states with the greatest number of bird strike incidents
+```{sql Finding the top 10 states with the greatest number of bird strike incidents, connection = con}
+SELECT 
+    a.airportState AS state,
+    COUNT(s.sid) AS number_of_incidents
+FROM 
+    flights f
+JOIN 
+    airports a ON f.origin = a.aid
+JOIN 
+    strikes s ON f.fid = s.fid
+GROUP BY 
+    a.airportState
+ORDER BY 
+    number_of_incidents DESC
+LIMIT 10;
+```
+
+# Q9 Finding the airlines that had an above average number bird strike incidents
+```{sql Finding the airlines that had an above average number bird strike incidents, connection=con}
+WITH AirlineIncidents AS (
+    SELECT 
+        f.airline,
+        COUNT(s.sid) AS incidents
+    FROM 
+        flights f
+    JOIN 
+        strikes s ON f.fid = s.fid
+    GROUP BY 
+        f.airline
+),
+
+AverageIncidents AS (
+    SELECT 
+        AVG(incidents) AS avg_incidents
+    FROM 
+        AirlineIncidents
+)
+
+SELECT 
+    ai.airline,
+    ai.incidents
+FROM 
+    AirlineIncidents ai, AverageIncidents av
+WHERE 
+    ai.incidents > av.avg_incidents
+ORDER BY 
+    ai.incidents DESC;
+
+```
+
+## Q10 Finding the (total) number of birds that struck aircraft by month
+```{r Finding the (total) number of birds that struck aircraft by month}
+# Execute the SQL query
+query <- "
+SELECT 
+    EXTRACT(MONTH FROM f.date) AS month, 
+    SUM(s.numbirds) AS total_birds_struck
+FROM 
+    flights AS f
+JOIN 
+    strikes AS s ON f.fid = s.fid
+GROUP BY 
+    month
+ORDER BY 
+    total_birds_struck DESC;
+"
+#Storing the results of the query in a dataframe
+monthlyStrikes <- suppressWarnings(dbGetQuery(con, query))
+monthlyStrikes$month <- months(as.Date(paste(monthlyStrikes$month, "1", sep="-"), format="%m-%d"))
+monthlyStrikes$month[is.na(monthlyStrikes$month)] <- "Unknown"
+
+
+#Printing only the first 6 months of data from the dataframe
+print(monthlyStrikes[1:6,])
+```
+
+## Q11 Building a column chart that plots month along the x-axis versus number of birds on the y-axis
+```{r Building a column chart that plots month along the x-axis versus number of birds on the y-axis}
+# Assuming df is the dataframe you got from the previous question
+monthlyStrikes <- monthlyStrikes[-1,]
+
+# Creating a bar plot without x-axis labels
+bp <- barplot(monthlyStrikes$total_birds_struck, 
+              names.arg=NULL, # suppress x-axis labels
+              main="Bird Strikes by Month",
+              xlab="Month",
+              ylab="Number of Birds Struck",
+              col="skyblue",
+              border="black",
+              ylim=c(0, max(monthlyStrikes$total_birds_struck) + 1500)) # +10 for a little extra space at the top
+
+# Adding rotated x-axis labels
+axis(side=1, at=bp, labels=monthlyStrikes$month, las=2, srt=30, adj=1)
+
+# Adding data labels
+if (length(monthlyStrikes$total_birds_struck) > 1) {
+  text(x=bp, 
+       y=monthlyStrikes$total_birds_struck + 5, # +5 to position the labels just above the bars
+       labels=monthlyStrikes$total_birds_struck, 
+       cex=0.7, 
+       pos=3)
+} else {
+  text(x=bp[1], 
+       y=monthlyStrikes$total_birds_struck + 5, 
+       labels=monthlyStrikes$total_birds_struck, 
+       cex=0.7, 
+       pos=3)
+}
+```
+
+## Q12 Creating a stored procedure in MySQL that adds a new strike to the database
+```{sql Creating a stored procedure in MySQL that adds a new strike to the database, connection=con}
+CREATE PROCEDURE IF NOT EXISTS AddBirdStrike(
+    -- Parameters for Airports
+    IN p_airportName TEXT, 
+    IN p_airportState TEXT, 
+    IN p_airportCode TEXT,
+    
+    -- Parameters for Flights
+    IN p_date DATE,
+    IN p_airline TEXT,
+    IN p_aircraft TEXT,
+    IN p_altitude INTEGER,
+    IN p_heavy BOOLEAN,
+    
+    -- Parameters for Strikes
+    IN p_numbirds INTEGER,
+    IN p_impact TEXT,
+    IN p_damage BOOLEAN,
+    IN p_strike_altitude INTEGER,
+    
+    -- Parameters for Conditions
+    IN p_sky_condition TEXT,
+    IN p_explanation TEXT
+)
+BEGIN
+    DECLARE v_origin INTEGER;
+    DECLARE v_fid INTEGER;
+    DECLARE v_conditions INTEGER;
+
+    -- Check if airport exists, if not insert it
+    SELECT aid INTO v_origin FROM airports WHERE airportCode = p_airportCode;
+    IF v_origin IS NULL THEN
+        INSERT INTO airports(airportName, airportState, airportCode) 
+        VALUES (p_airportName, p_airportState, p_airportCode);
+        SET v_origin = LAST_INSERT_ID();
+    END IF;
+
+    -- Insert flight and get the fid
+    INSERT INTO flights(date, origin, airline, aircraft, altitude, heavy) 
+    VALUES (p_date, v_origin, p_airline, p_aircraft, p_altitude, p_heavy);
+    SET v_fid = LAST_INSERT_ID();
+
+    -- Check if conditions exist, if not insert it
+    SELECT cid INTO v_conditions FROM conditions WHERE sky_condition = p_sky_condition AND explanation = p_explanation;
+    IF v_conditions IS NULL THEN
+        INSERT INTO conditions(sky_condition, explanation)
+        VALUES (p_sky_condition, p_explanation);
+        SET v_conditions = LAST_INSERT_ID();
+    END IF;
+
+    -- Insert strike
+    INSERT INTO strikes(fid, numbirds, impact, damage, altitude, conditions)
+    VALUES (v_fid, p_numbirds, p_impact, p_damage, p_strike_altitude, v_conditions);
+    
+END;
+
+```
+
+## Q13 Testing the defined procedure by adding new row of data
+```{r Testing the defined procedure by adding new row of data}
+sample_airportName <- "Northeastern Airport"
+sample_airportState <- "Northeastern Land"
+sample_airportCode <- ""
+sample_date <- "2023-10-31"
+sample_airline <- "NEU"
+sample_aircraft <- "Khoury"
+sample_altitude <- 10000
+sample_heavy <- TRUE
+sample_numbirds <- 1
+sample_impact <- "minor"
+sample_damage <- FALSE
+sample_strike_altitude <- 8000
+sample_sky_condition <- "Clear"
+sample_explanation <- "Normal Condition"
+
+# Call the stored procedure using sprintf
+query <- sprintf(
+    "CALL AddBirdStrike('%s', '%s', '%s', '%s', '%s', '%s', %d, %d, %d, '%s', %d, '%s', '%s', '%s')",
+    sample_airportName, sample_airportState, sample_airportCode, 
+    sample_date, sample_airline, sample_aircraft, sample_altitude, as.integer(sample_heavy), 
+    sample_numbirds, sample_impact, as.integer(sample_damage), sample_strike_altitude, 
+    sample_sky_condition, sample_explanation
+)
+
+# Execute the stored procedure
+dbSendQuery(con, query)
+```
+
+## Verifying the insertion by fetching the latest row in strikes table
+```{r Verifying the insertion by fetching the latest row in strikes table}
+result <- dbGetQuery(con, "SELECT * FROM strikes ORDER BY sid DESC LIMIT 1")
+print(result)
+```
+
+## Verifying the insertion by fetching the latest row in flights table
+```{r Verifying the insertion by fetching the latest row in flights table}
+result <- dbGetQuery(con, "SELECT * FROM flights ORDER BY fid DESC LIMIT 1")
+print(result)
+```
+
+## Verifying the insertion by fetching the latest row in airports table
+```{r Verifying the insertion by fetching the latest row in airports table}
+result <- dbGetQuery(con, "SELECT * FROM airports ORDER BY aid DESC LIMIT 1")
+print(result)
+```
+
+## Disconnecting the database
+```{r Disconnect database}
+dbDisconnect(con)
+```
